@@ -10,27 +10,33 @@
 
 A [SOCKS5](https://en.wikipedia.org/wiki/SOCKS#SOCKS5) and
 [HTTP CONNECT](https://en.wikipedia.org/wiki/HTTP_tunnel#HTTP_CONNECT_method) proxy
-that lives on your [Tailscale](https://tailscale.com) network.
+that runs on your [Tailscale](https://tailscale.com) network.
 
 </div>
 
 ## Overview
 
-Tailgate is a small, single-binary proxy server that joins your Tailscale
-tailnet using [tsnet](https://pkg.go.dev/tailscale.com/tsnet) and accepts
-both [SOCKS5](https://en.wikipedia.org/wiki/SOCKS#SOCKS5) and
-[HTTP CONNECT](https://en.wikipedia.org/wiki/HTTP_tunnel#HTTP_CONNECT_method)
-proxy connections. Point your browser or CLI
-tools at it and route traffic through your tailnet without installing
-Tailscale on every machine.
+Tailgate is a small, single-binary proxy that joins your Tailscale tailnet
+via [tsnet](https://pkg.go.dev/tailscale.com/tsnet) and accepts SOCKS5 and
+HTTP CONNECT connections. Unlike a Tailscale
+[exit node](https://tailscale.com/kb/1103/exit-nodes) which routes all of a
+device's traffic through another node, Tailgate lets you selectively route
+only the traffic you choose -- per app, browser, or command.
+
+## Why Tailgate?
+
+- You want to route specific apps or browsers through your tailnet, not all traffic
+- You can't (or don't want to) install the Tailscale daemon on the proxy host
+- You need a proxy in a container, CI runner, or embedded device with no `/dev/net/tun`
+- You want both SOCKS5 and HTTP CONNECT on one port with zero configuration
 
 ## Features
 
-- **SOCKS5 and HTTP CONNECT** in a single listener with automatic protocol detection
-- **Embeds into your tailnet** via tsnet -- no Tailscale daemon required on the proxy host
+- **Automatic protocol detection** -- serves both SOCKS5 and HTTP CONNECT on a single port
+- **Joins your tailnet via tsnet** -- no Tailscale daemon required on the proxy host
 - **Idle tunnel teardown** -- tunnels with no traffic in either direction are cleaned up automatically
 - **Graceful shutdown** -- drains active connections on SIGINT/SIGTERM
-- **Hardened request parsing** -- caps CONNECT request size, returns proper 4xx errors
+- **Hardened request parsing** -- caps CONNECT header size, returns proper 4xx errors
 
 ## Installation
 
@@ -38,7 +44,7 @@ Tailscale on every machine.
 go install github.com/kljensen/tailgate@latest
 ```
 
-Or build from source:
+Or build from source (dependencies are vendored):
 
 ```bash
 git clone https://github.com/kljensen/tailgate.git
@@ -58,7 +64,7 @@ tailgate [flags]
 | `-listen` | `:1080` | Address to listen on |
 | `-state-dir` | _(tsnet default)_ | Directory for tsnet state |
 | `-verbose` | `false` | Enable debug logging |
-| `-version` | | Print version and exit |
+| `-version` | n/a | Print version and exit |
 
 ### Starting the proxy
 
@@ -66,8 +72,19 @@ tailgate [flags]
 tailgate -hostname my-proxy -verbose
 ```
 
-On first run, tsnet will print a login URL. Authenticate to join the proxy
-to your tailnet.
+On first run, tsnet will print a login URL. Visit it to authorize the
+node on your tailnet. State is saved to `-state-dir` (or a temp
+directory by default), so subsequent runs reconnect automatically.
+
+For headless or automated deployments, set `TS_AUTHKEY`:
+
+```bash
+TS_AUTHKEY=tskey-auth-... tailgate -hostname my-proxy -state-dir /var/lib/tailgate
+```
+
+Generate auth keys at https://login.tailscale.com/admin/settings/keys.
+Use `-state-dir` for any persistent deployment so tsnet state survives
+reboots.
 
 ### Proxying with curl
 
@@ -85,10 +102,9 @@ Many tools (curl, wget, git, python requests, etc.) respect the standard
 proxy environment variables:
 
 ```bash
-export https_proxy=socks5h://my-proxy:1080
-export http_proxy=socks5h://my-proxy:1080
+export ALL_PROXY=socks5h://my-proxy:1080
 
-# Now these just work
+# These then route through Tailgate
 curl https://example.com
 git clone https://github.com/user/repo.git
 wget https://example.com/file.tar.gz
@@ -98,18 +114,31 @@ wget https://example.com/file.tar.gz
 
 [Firefox](https://support.mozilla.org/en-US/kb/connection-settings-firefox)
 has built-in proxy settings -- set the SOCKS Host to `my-proxy`, port
-`1080`, SOCKS v5, and check "Proxy DNS when using SOCKS v5". Chrome and
-Safari use your operating system's proxy settings. See the
+`1080`, SOCKS v5, and check "Proxy DNS when using SOCKS v5" in Firefox.
+Chrome and Safari use your operating system's proxy settings. See the
 [ArchWiki](https://wiki.archlinux.org/title/Proxy_server) for a
 comprehensive reference.
 
 ## How It Works
 
 Tailgate listens on a single TCP port. When a connection arrives, it peeks
-at the first byte: `0x05` means SOCKS5, anything else is treated as an HTTP
-CONNECT request. Both protocols establish a bidirectional tunnel to the
-target host. Each side of the tunnel is wrapped with an idle timeout so
-stale connections don't linger forever.
+at the first byte: `0x05` means SOCKS5, anything else is parsed as an HTTP
+CONNECT request (returning 400 if invalid). Both protocols establish a
+bidirectional tunnel to the target host. Each side of the tunnel is wrapped
+with an idle timeout so stale connections don't linger forever.
+
+## Security
+
+Tailgate listens via `tsnet.Listen`, so only devices on your Tailscale
+network can connect. No proxy authentication is needed -- your tailnet
+*is* the trust boundary. Use
+[Tailscale ACLs](https://tailscale.com/kb/1018/acls) for finer-grained
+access control.
+
+## See Also
+
+- [wireproxy](https://github.com/whyvl/wireproxy) -- the same idea for WireGuard
+- [Tailscale userspace networking](https://tailscale.com/kb/1112/userspace-networking) -- Tailscale's built-in SOCKS5 proxy (requires the full daemon)
 
 ## License
 
