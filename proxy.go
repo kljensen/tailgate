@@ -25,14 +25,17 @@ func serve(ctx context.Context, ln net.Listener, logger *slog.Logger) {
 	var retryDelay time.Duration
 	var active sync.WaitGroup
 
+	defer func() {
+		if !waitForWaitGroup(&active, shutdownDrainTimeout) {
+			logger.Warn("graceful shutdown timeout reached", "timeout", shutdownDrainTimeout)
+		}
+	}()
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				slog.Debug("listener closed")
-				if !waitForWaitGroup(&active, shutdownDrainTimeout) {
-					logger.Warn("graceful shutdown timeout reached", "timeout", shutdownDrainTimeout)
-				}
 				return
 			}
 			if isTemporaryAcceptError(err) {
@@ -40,18 +43,12 @@ func serve(ctx context.Context, ln net.Listener, logger *slog.Logger) {
 				logger.Warn("temporary accept error; retrying", "error", err, "backoff", retryDelay)
 				select {
 				case <-ctx.Done():
-					if !waitForWaitGroup(&active, shutdownDrainTimeout) {
-						logger.Warn("graceful shutdown timeout reached", "timeout", shutdownDrainTimeout)
-					}
 					return
 				case <-time.After(retryDelay):
 				}
 				continue
 			}
 			slog.Error("accept failed", "error", err)
-			if !waitForWaitGroup(&active, shutdownDrainTimeout) {
-				logger.Warn("graceful shutdown timeout reached", "timeout", shutdownDrainTimeout)
-			}
 			return
 		}
 		retryDelay = 0

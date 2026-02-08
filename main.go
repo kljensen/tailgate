@@ -38,8 +38,8 @@ func main() {
 		Hostname: *hostname,
 		Dir:      *stateDir,
 	}
-	if !*verbose {
-		tsServer.Logf = func(string, ...any) {}
+	tsServer.Logf = func(format string, args ...any) {
+		slog.Debug(fmt.Sprintf("tsnet: "+format, args...))
 	}
 	defer tsServer.Close() //nolint:errcheck // best-effort cleanup
 
