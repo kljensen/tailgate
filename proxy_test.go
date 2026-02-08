@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"net"
+	"syscall"
+	"testing"
+	"time"
+)
 
 func TestIsSOCKS5(t *testing.T) {
 	t.Parallel()
@@ -47,3 +53,50 @@ func TestConnectTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestIsTemporaryAcceptError(t *testing.T) {
+	t.Parallel()
+
+	if !isTemporaryAcceptError(syscall.ECONNABORTED) {
+		t.Fatal("expected ECONNABORTED to be temporary")
+	}
+
+	timeoutErr := &stubNetError{timeout: true}
+	if !isTemporaryAcceptError(timeoutErr) {
+		t.Fatal("expected timeout net.Error to be temporary")
+	}
+
+	temporaryErr := &stubNetError{temporary: true}
+	if !isTemporaryAcceptError(temporaryErr) {
+		t.Fatal("expected Temporary() error to be temporary")
+	}
+
+	if isTemporaryAcceptError(errors.New("permanent")) {
+		t.Fatal("expected plain error to be non-temporary")
+	}
+}
+
+func TestNextRetryDelay(t *testing.T) {
+	t.Parallel()
+
+	if got := nextRetryDelay(0); got != 50*time.Millisecond {
+		t.Fatalf("nextRetryDelay(0) = %v, want 50ms", got)
+	}
+	if got := nextRetryDelay(50 * time.Millisecond); got != 100*time.Millisecond {
+		t.Fatalf("nextRetryDelay(50ms) = %v, want 100ms", got)
+	}
+	if got := nextRetryDelay(maxAcceptRetryDelay); got != maxAcceptRetryDelay {
+		t.Fatalf("nextRetryDelay(max) = %v, want %v", got, maxAcceptRetryDelay)
+	}
+}
+
+type stubNetError struct {
+	timeout   bool
+	temporary bool
+}
+
+func (e *stubNetError) Error() string   { return "stub" }
+func (e *stubNetError) Timeout() bool   { return e.timeout }
+func (e *stubNetError) Temporary() bool { return e.temporary }
+
+var _ net.Error = (*stubNetError)(nil)

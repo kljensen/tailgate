@@ -6,17 +6,20 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/things-go/go-socks5"
 )
 
 const protocolPeekTimeout = 10 * time.Second
+const maxAcceptRetryDelay = 1 * time.Second
 
 func serve(ln net.Listener, logger *slog.Logger) {
 	socksServer := socks5.NewServer(
 		socks5.WithLogger(&slogSocks5Logger{logger}),
 	)
+	var retryDelay time.Duration
 
 	for {
 		conn, err := ln.Accept()
@@ -25,9 +28,16 @@ func serve(ln net.Listener, logger *slog.Logger) {
 				slog.Debug("listener closed")
 				return
 			}
+			if isTemporaryAcceptError(err) {
+				retryDelay = nextRetryDelay(retryDelay)
+				logger.Warn("temporary accept error; retrying", "error", err, "backoff", retryDelay)
+				time.Sleep(retryDelay)
+				continue
+			}
 			slog.Error("accept failed", "error", err)
 			return
 		}
+		retryDelay = 0
 		go handleConn(conn, socksServer, logger)
 	}
 }
@@ -86,4 +96,39 @@ type slogSocks5Logger struct {
 
 func (l *slogSocks5Logger) Errorf(format string, args ...any) {
 	l.logger.Error(fmt.Sprintf(format, args...))
+}
+
+func isTemporaryAcceptError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Common transient error reported by accept under connection churn.
+	if errors.Is(err, syscall.ECONNABORTED) {
+		return true
+	}
+
+	type temporary interface {
+		Temporary() bool
+	}
+	if te, ok := err.(temporary); ok && te.Temporary() {
+		return true
+	}
+
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return true
+	}
+
+	return false
+}
+
+func nextRetryDelay(current time.Duration) time.Duration {
+	if current <= 0 {
+		return 50 * time.Millisecond
+	}
+	next := current * 2
+	if next > maxAcceptRetryDelay {
+		return maxAcceptRetryDelay
+	}
+	return next
 }
