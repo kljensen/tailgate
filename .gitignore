@@ -10,6 +10,7 @@ tailgate
 
 # Claude Code
 .claude/
+.mcp.json
 
 # OS
 .DS_Store
