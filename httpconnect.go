@@ -17,14 +17,18 @@ import (
 const (
 	connectReadTimeout     = 15 * time.Second
 	connectDialTimeout     = 10 * time.Second
-	maxConnectRequestBytes = 8192            // 8KB; generous for CONNECT host:port + headers
-	tunnelIdleTimeout      = 5 * time.Minute // no data in either direction → close
+	maxConnectRequestBytes = 8192 // 8KB; generous for CONNECT host:port + headers
 )
+
+// tunnelIdleTimeout is the duration with no data in either direction before
+// a tunnel is torn down. It is a var so tests can override it.
+var tunnelIdleTimeout = 5 * time.Minute
 
 func handleHTTPConnect(conn net.Conn, br *bufio.Reader, logger *slog.Logger) {
 	_ = conn.SetReadDeadline(time.Now().Add(connectReadTimeout))
 	lr := &io.LimitedReader{R: br, N: maxConnectRequestBytes}
 	req, err := http.ReadRequest(bufio.NewReader(lr))
+	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		status := classifyReadRequestError(lr, err)
 		if status == http.StatusRequestHeaderFieldsTooLarge {
@@ -32,10 +36,9 @@ func handleHTTPConnect(conn net.Conn, br *bufio.Reader, logger *slog.Logger) {
 		} else {
 			writeHTTPError(conn, http.StatusBadRequest, "malformed request\n")
 		}
-		slog.Debug("failed to read http request", "remote", remoteAddr(conn), "error", err)
+		logger.Debug("failed to read http request", "remote", remoteAddr(conn), "error", err)
 		return
 	}
-	_ = conn.SetReadDeadline(time.Time{})
 	defer req.Body.Close() //nolint:errcheck // best-effort cleanup
 
 	if req.Method != http.MethodConnect {
@@ -151,6 +154,10 @@ func writeHTTPError(conn net.Conn, code int, body string) {
 	_ = resp.Write(conn)
 }
 
+// classifyReadRequestError returns 431 if the request exceeded the size limit,
+// 400 otherwise. The lr.N <= 0 check is reliable because the underlying reader
+// is a blocking network stream: bytes are only consumed when actually available,
+// so lr.N only reaches zero when maxConnectRequestBytes were truly read.
 func classifyReadRequestError(lr *io.LimitedReader, err error) int {
 	if lr != nil && lr.N <= 0 {
 		return http.StatusRequestHeaderFieldsTooLarge

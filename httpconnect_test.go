@@ -148,6 +148,53 @@ func executeProxyRequest(t *testing.T, request string) (statusLine, body string)
 	return resp.Status, ""
 }
 
+func TestHandleHTTPConnectIdleTunnelTeardown(t *testing.T) {
+	// Not parallel: mutates the package-level tunnelIdleTimeout.
+
+	targetAddr, stopTarget := startEchoServer(t)
+	defer stopTarget()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close() //nolint:errcheck // test cleanup
+
+	// Override the idle timeout to something short for the test.
+	origTimeout := tunnelIdleTimeout
+	tunnelIdleTimeout = 100 * time.Millisecond
+	defer func() { tunnelIdleTimeout = origTimeout }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		handleHTTPConnect(serverConn, bufio.NewReader(serverConn), logger)
+	}()
+
+	req := "CONNECT " + targetAddr + " HTTP/1.1\r\nHost: " + targetAddr + "\r\n\r\n"
+	if _, err := io.WriteString(clientConn, req); err != nil {
+		t.Fatalf("write connect request: %v", err)
+	}
+
+	br := bufio.NewReader(clientConn)
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read status line: %v", err)
+	}
+	if !strings.Contains(statusLine, "200") {
+		t.Fatalf("expected 200 status line, got %q", statusLine)
+	}
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("read header terminator: %v", err)
+	}
+
+	// Tunnel is established. Don't send any data — the idle timeout should
+	// tear it down.
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not exit after idle timeout")
+	}
+}
+
 func TestIdleTimeoutConn(t *testing.T) {
 	t.Parallel()
 

@@ -154,6 +154,9 @@ func nextRetryDelay(current time.Duration) time.Duration {
 	return next
 }
 
+// waitForWaitGroup returns true if wg completes within timeout, false otherwise.
+// On timeout the internal goroutine calling wg.Wait is intentionally leaked;
+// this is only used during process shutdown where the leak is harmless.
 func waitForWaitGroup(wg *sync.WaitGroup, timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
