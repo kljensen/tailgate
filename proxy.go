@@ -35,7 +35,7 @@ func serve(ctx context.Context, ln net.Listener, logger *slog.Logger) {
 		conn, err := ln.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
-				slog.Debug("listener closed")
+				logger.Debug("listener closed")
 				return
 			}
 			if isTemporaryAcceptError(err) {
@@ -48,15 +48,13 @@ func serve(ctx context.Context, ln net.Listener, logger *slog.Logger) {
 				}
 				continue
 			}
-			slog.Error("accept failed", "error", err)
+			logger.Error("accept failed", "error", err)
 			return
 		}
 		retryDelay = 0
-		active.Add(1)
-		go func() {
-			defer active.Done()
+		active.Go(func() {
 			handleConn(conn, socksServer, logger)
-		}()
+		})
 	}
 }
 
