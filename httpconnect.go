@@ -72,17 +72,14 @@ func handleHTTPConnect(conn net.Conn, br *bufio.Reader, logger *slog.Logger) {
 	// when its copy finishes, which unblocks the other goroutine's read.
 	// The defers above are safety nets for the redundant close.
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_, _ = io.Copy(idleTarget, idleConn)
 		_ = target.Close()
-	}()
-	go func() {
-		defer wg.Done()
+	})
+	wg.Go(func() {
 		_, _ = io.Copy(idleConn, idleTarget)
 		_ = conn.Close()
-	}()
+	})
 	wg.Wait()
 }
 
