@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -76,10 +77,29 @@ func TestHandleHTTPConnectMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestHandleHTTPConnectOversizedRequest(t *testing.T) {
+	t.Parallel()
+
+	huge := "CONNECT " + strings.Repeat("A", maxConnectRequestBytes+1000) + ":443 HTTP/1.1\r\nHost: x\r\n\r\n"
+	statusLine, _ := executeProxyRequest(t, huge)
+	if !strings.Contains(statusLine, "431") {
+		t.Fatalf("expected 431, got %q", statusLine)
+	}
+}
+
 func TestHandleHTTPConnectBadTarget(t *testing.T) {
 	t.Parallel()
 
 	statusLine, _ := executeProxyRequest(t, "CONNECT example.com:0 HTTP/1.1\r\nHost: example.com:0\r\n\r\n")
+	if !strings.Contains(statusLine, "400") {
+		t.Fatalf("expected 400, got %q", statusLine)
+	}
+}
+
+func TestHandleHTTPConnectMalformedRequest(t *testing.T) {
+	t.Parallel()
+
+	statusLine, _ := executeProxyRequest(t, "THIS_IS_NOT_HTTP\r\n\r\n")
 	if !strings.Contains(statusLine, "400") {
 		t.Fatalf("expected 400, got %q", statusLine)
 	}
@@ -98,9 +118,12 @@ func executeProxyRequest(t *testing.T, request string) (statusLine, body string)
 		handleHTTPConnect(serverConn, bufio.NewReader(serverConn), logger)
 	}()
 
-	if _, err := io.WriteString(clientConn, request); err != nil {
-		t.Fatalf("write request: %v", err)
-	}
+	writeDone := make(chan error, 1)
+	go func() {
+		_ = clientConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		_, err := io.WriteString(clientConn, request)
+		writeDone <- err
+	}()
 	_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
 	br := bufio.NewReader(clientConn)
@@ -116,8 +139,34 @@ func executeProxyRequest(t *testing.T, request string) (statusLine, body string)
 	case <-time.After(3 * time.Second):
 		t.Fatal("handler did not exit after request")
 	}
+	select {
+	case <-writeDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("request writer did not exit")
+	}
 
 	return resp.Status, ""
+}
+
+func TestIdleTimeoutConn(t *testing.T) {
+	t.Parallel()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close() //nolint:errcheck // test cleanup
+	defer serverConn.Close() //nolint:errcheck // test cleanup
+
+	wrapped := &idleTimeoutConn{Conn: serverConn, timeout: 50 * time.Millisecond}
+
+	// No data is written to clientConn, so the read should timeout.
+	buf := make([]byte, 1)
+	_, err := wrapped.Read(buf)
+	if err == nil {
+		t.Fatal("expected timeout error from idle conn read")
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected timeout net.Error, got %v", err)
+	}
 }
 
 func startEchoServer(t *testing.T) (addr string, stop func()) {

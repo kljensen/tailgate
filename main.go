@@ -75,5 +75,5 @@ func main() {
 		_ = ln.Close()
 	}()
 
-	serve(ln, logger)
+	serve(ctx, ln, logger)
 }

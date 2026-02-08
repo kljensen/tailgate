@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -87,6 +88,33 @@ func TestNextRetryDelay(t *testing.T) {
 	}
 	if got := nextRetryDelay(maxAcceptRetryDelay); got != maxAcceptRetryDelay {
 		t.Fatalf("nextRetryDelay(max) = %v, want %v", got, maxAcceptRetryDelay)
+	}
+}
+
+func TestWaitForWaitGroup(t *testing.T) {
+	t.Parallel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(20 * time.Millisecond)
+	}()
+
+	if !waitForWaitGroup(&wg, 200*time.Millisecond) {
+		t.Fatal("expected waitForWaitGroup to complete before timeout")
+	}
+}
+
+func TestWaitForWaitGroupTimeout(t *testing.T) {
+	t.Parallel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	defer wg.Done()
+
+	if waitForWaitGroup(&wg, 10*time.Millisecond) {
+		t.Fatal("expected waitForWaitGroup timeout")
 	}
 }
 

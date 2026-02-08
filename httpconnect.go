@@ -15,14 +15,23 @@ import (
 )
 
 const (
-	connectReadTimeout = 15 * time.Second
-	connectDialTimeout = 10 * time.Second
+	connectReadTimeout     = 15 * time.Second
+	connectDialTimeout     = 10 * time.Second
+	maxConnectRequestBytes = 8192            // 8KB; generous for CONNECT host:port + headers
+	tunnelIdleTimeout      = 5 * time.Minute // no data in either direction → close
 )
 
 func handleHTTPConnect(conn net.Conn, br *bufio.Reader, logger *slog.Logger) {
 	_ = conn.SetReadDeadline(time.Now().Add(connectReadTimeout))
-	req, err := http.ReadRequest(br)
+	lr := &io.LimitedReader{R: br, N: maxConnectRequestBytes}
+	req, err := http.ReadRequest(bufio.NewReader(lr))
 	if err != nil {
+		status := classifyReadRequestError(lr, err)
+		if status == http.StatusRequestHeaderFieldsTooLarge {
+			writeHTTPError(conn, http.StatusRequestHeaderFieldsTooLarge, "request too large\n")
+		} else {
+			writeHTTPError(conn, http.StatusBadRequest, "malformed request\n")
+		}
 		slog.Debug("failed to read http request", "remote", remoteAddr(conn), "error", err)
 		return
 	}
@@ -51,6 +60,11 @@ func handleHTTPConnect(conn net.Conn, br *bufio.Reader, logger *slog.Logger) {
 
 	_, _ = fmt.Fprint(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 
+	// Wrap both sides with an idle timeout so tunnels with no traffic
+	// in either direction are cleaned up after tunnelIdleTimeout.
+	idleConn := &idleTimeoutConn{Conn: conn, timeout: tunnelIdleTimeout}
+	idleTarget := &idleTimeoutConn{Conn: target, timeout: tunnelIdleTimeout}
+
 	// Relay bytes bidirectionally. Each goroutine closes the destination
 	// when its copy finishes, which unblocks the other goroutine's read.
 	// The defers above are safety nets for the redundant close.
@@ -58,12 +72,12 @@ func handleHTTPConnect(conn net.Conn, br *bufio.Reader, logger *slog.Logger) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(target, conn)
+		_, _ = io.Copy(idleTarget, idleConn)
 		_ = target.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(conn, target)
+		_, _ = io.Copy(idleConn, idleTarget)
 		_ = conn.Close()
 	}()
 	wg.Wait()
@@ -105,6 +119,23 @@ func connectTarget(hostport string) (string, error) {
 	return "", err
 }
 
+// idleTimeoutConn resets the connection deadline on every Read or Write,
+// so the tunnel is torn down if no data flows for the configured duration.
+type idleTimeoutConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (c *idleTimeoutConn) Read(p []byte) (int, error) {
+	_ = c.SetDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Read(p)
+}
+
+func (c *idleTimeoutConn) Write(p []byte) (int, error) {
+	_ = c.SetDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Write(p)
+}
+
 func writeHTTPError(conn net.Conn, code int, body string) {
 	resp := &http.Response{
 		StatusCode:    code,
@@ -118,4 +149,14 @@ func writeHTTPError(conn net.Conn, code int, body string) {
 	resp.Header.Set("Content-Type", "text/plain; charset=utf-8")
 	resp.Header.Set("Connection", "close")
 	_ = resp.Write(conn)
+}
+
+func classifyReadRequestError(lr *io.LimitedReader, err error) int {
+	if lr != nil && lr.N <= 0 {
+		return http.StatusRequestHeaderFieldsTooLarge
+	}
+	if errors.Is(err, bufio.ErrBufferFull) {
+		return http.StatusRequestHeaderFieldsTooLarge
+	}
+	return http.StatusBadRequest
 }

@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"syscall"
 	"time"
 
@@ -14,31 +16,50 @@ import (
 
 const protocolPeekTimeout = 10 * time.Second
 const maxAcceptRetryDelay = 1 * time.Second
+const shutdownDrainTimeout = 10 * time.Second
 
-func serve(ln net.Listener, logger *slog.Logger) {
+func serve(ctx context.Context, ln net.Listener, logger *slog.Logger) {
 	socksServer := socks5.NewServer(
 		socks5.WithLogger(&slogSocks5Logger{logger}),
 	)
 	var retryDelay time.Duration
+	var active sync.WaitGroup
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				slog.Debug("listener closed")
+				if !waitForWaitGroup(&active, shutdownDrainTimeout) {
+					logger.Warn("graceful shutdown timeout reached", "timeout", shutdownDrainTimeout)
+				}
 				return
 			}
 			if isTemporaryAcceptError(err) {
 				retryDelay = nextRetryDelay(retryDelay)
 				logger.Warn("temporary accept error; retrying", "error", err, "backoff", retryDelay)
-				time.Sleep(retryDelay)
+				select {
+				case <-ctx.Done():
+					if !waitForWaitGroup(&active, shutdownDrainTimeout) {
+						logger.Warn("graceful shutdown timeout reached", "timeout", shutdownDrainTimeout)
+					}
+					return
+				case <-time.After(retryDelay):
+				}
 				continue
 			}
 			slog.Error("accept failed", "error", err)
+			if !waitForWaitGroup(&active, shutdownDrainTimeout) {
+				logger.Warn("graceful shutdown timeout reached", "timeout", shutdownDrainTimeout)
+			}
 			return
 		}
 		retryDelay = 0
-		go handleConn(conn, socksServer, logger)
+		active.Add(1)
+		go func() {
+			defer active.Done()
+			handleConn(conn, socksServer, logger)
+		}()
 	}
 }
 
@@ -131,4 +152,19 @@ func nextRetryDelay(current time.Duration) time.Duration {
 		return maxAcceptRetryDelay
 	}
 	return next
+}
+
+func waitForWaitGroup(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
