@@ -26,8 +26,9 @@ jobs:
 
       - name: Check formatting
         run: |
-          if [ "$(gofmt -l . | wc -l)" -gt 0 ]; then
+          unformatted=$(gofmt -l . | grep -v '^vendor/' || true)
+          if [ -n "$unformatted" ]; then
             echo "The following files need formatting:"
-            gofmt -l .
+            echo "$unformatted"
             exit 1
           fi

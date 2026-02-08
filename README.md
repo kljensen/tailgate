@@ -5,7 +5,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/kljensen/tailgate/ci.yml?branch=main&style=for-the-badge&logo=github-actions&logoColor=white&label=CI)](https://github.com/kljensen/tailgate/actions/workflows/ci.yml)
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-yellow.svg?style=for-the-badge)](https://unlicense.org/)
-[![Go Version](https://img.shields.io/github/go-mod-go-version/kljensen/tailgate?style=for-the-badge&logo=go)](https://github.com/kljensen/tailgate)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/kljensen/tailgate?style=for-the-badge&logo=go)](https://github.com/kljensen/tailgate)
 [![Go Report Card](https://goreportcard.com/badge/github.com/kljensen/tailgate?style=for-the-badge)](https://goreportcard.com/report/github.com/kljensen/tailgate)
 
 A [SOCKS5](https://en.wikipedia.org/wiki/SOCKS#SOCKS5) and
